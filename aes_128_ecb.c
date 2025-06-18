@@ -1,9 +1,13 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include "GF_2_mult_mod.h"
 
-#define KEY_LENGTH 16
-#define W_LENGTH 44
-
+#define KEY_LENGTH 16 // BYTES (8 BITS)
+#define W_LENGTH 44 // WORDS (32 BITS)
+#define PLAINTEXT_LENGTH 16 // BYTES (8 BITS)
+#define BLOCK_LENGTH 16 // BYTES (8 BITS)
 #define printbytes(format, expr, len) \
 { \
     for (int i=0; i< len; i++) { \
@@ -12,7 +16,26 @@
     fprintf(stdout, "\n"); \
 }
 
-void copy_original_key_to_w(unsigned char key[], u_int32_t W[])
+#define printsubkeys(W, len) \
+{ \
+    for (int i=0; i< len; i+= 4) { \
+        fprintf(stdout, "subkey %d\t", i / 4); \
+        for (int j = i; j < i + 4; j++) { \
+            printf("%08X ", W[j]); \
+        } \
+        fprintf(stdout, "\n"); \
+    } \
+}
+
+// #define fill(arr, len, value) \
+// { \
+//     for (int i = 0; i < len; ++i) \
+//     { \
+//         arr[i] = value; \
+//     } \
+// }
+
+void copy_org_key_to_w(unsigned char key[], u_int32_t W[])
 {
     for (int i = 0; i < 4; i++) {
         int shift = 8 * 3;
@@ -65,8 +88,7 @@ u_int32_t g(u_int32_t V, uint8_t round_no)
         This loop help to break the u_int32_t V into an arr
         ex. 6E65726D --> { 0x6E, 0x65, 0x72, 0x6D }
     */
-    for (int i = 3; i >= 0; i--)
-    {
+    for (int i = 3; i >= 0; i--) {
         V2[i] = (temp & mask);
         temp >>= 8;
     }
@@ -100,15 +122,9 @@ u_int32_t g(u_int32_t V, uint8_t round_no)
     return res;
 }
 
-void generate_round_key_i(u_int32_t W[], int round_no)
+void key_schedule(unsigned char key[], u_int32_t W[])
 {
-
-}
-
-void key_schedule(unsigned char key[])
-{
-    u_int32_t W[W_LENGTH] = { 0 };
-    copy_original_key_to_w(key, W);
+    copy_org_key_to_w(key, W);
 
     for (int i = 1; i <= 10; i++) {
         W[4 * i] = W[4 * (i - 1)] ^ g(W[4 * i - 1], i);
@@ -117,14 +133,126 @@ void key_schedule(unsigned char key[])
         }
     }
 
-    for (int i = 0; i < W_LENGTH; i += 4) {
-        printf("subkey %d\t", i / 4);
-        for (int j = i; j < i + 4; j++) {
-            printf("%08X ", W[j]);
+}
+
+
+
+// void set_block(u_int32_t block[], uint8_t plaintext[], int block_no)
+// {
+//     // block_no 1 | index :  0 - 15
+//     // block_no 2 | index : 16 - 31
+//     // block_no 3 | index : 32 - 47
+
+//     // i = (block_no-1)*16 
+//     // Ex block_no=1, start idx = (1-1)*16 = 0
+
+//     u_int32_t temp1 = 0x00, temp2 = 0x00;
+//     int j = 0, shift = 8 * 3;
+//     for (int i = (block_no - 1) * 16; i < ((block_no - 1) * 16) + 16; i++) {
+//         u_int32_t temp1 = plaintext[i];
+//         temp1 <<= shift;
+//         shift -= 8;
+//         temp2 ^= temp1;
+//         if ((i + 1) % 4 == 0) {
+//             block[j++] = temp2;
+//             temp2 = 0x00;
+//             shift = 8 * 3;
+//         }
+//     }
+// }
+
+void key_addition_layer(uint8_t block[], u_int32_t W[], int round_no)
+{
+    int k = 0;
+    for (int i = (4 * round_no); i < (4 * round_no) + 4; i++) {
+        // loop again since we have 4 bytes in each W[i] 
+        int shifter = 8 * 3;
+        for (int j = 0; j < 4; j++) {
+            uint8_t temp2 = (W[i] >> shifter) & 0xFF;
+            block[k++] ^= temp2;
+            shifter -= 8;
         }
-        printf("\n");
+    }
+}
+
+void byte_substitution_layer(uint8_t block[])
+{
+    for (int i = 0; i < BLOCK_LENGTH; i++) {
+        block[i] = s_box(block[i]);
+    }
+}
+
+void shiftrows_layer(uint8_t block[])
+{
+    uint8_t temp1, temp2, temp3;
+
+    // Row 0: no shift
+
+    // Row 1: shift left by 1
+    temp1 = block[1];
+    block[1] = block[5];
+    block[5] = block[9];
+    block[9] = block[13];
+    block[13] = temp1;
+
+    // Row 2: shift left by 2
+    temp1 = block[2];
+    temp2 = block[6];
+    block[2] = block[10];
+    block[6] = block[14];
+    block[10] = temp1;
+    block[14] = temp2;
+
+    // Row 3: shift left by 3
+    temp1 = block[3];
+    temp2 = block[7];
+    temp3 = block[11];
+    block[3] = block[15];
+    block[7] = temp1;
+    block[11] = temp2;
+    block[15] = temp3;
+
+}
+
+void matmul(uint8_t C[], uint8_t B[], int sz)
+{
+    const int msz = 4;
+    u_int8_t constant_matrix[msz][msz] = {
+           {0x02, 0x03, 0x01, 0x01},
+           {0x01, 0x02, 0x03, 0x01},
+           {0x01, 0x01, 0x02, 0x03},
+           {0x03, 0x01, 0x01, 0x02},
+    };
+
+    // u_int8_t C[msz] = { 0 };
+    for (int i = 0; i < msz; i++) {
+        for (int j = 0; j < msz; j++) {
+            u_int8_t ans = GF_2_mult_mod(constant_matrix[i][j], B[j]);
+            C[i] ^= ans;
+        }
     }
 
+}
+
+void mixcolumn_layer(uint8_t block[])
+{
+    const int sz = 4;
+    for (int i = 0; i < BLOCK_LENGTH; i += 4) {
+        int k = 0;
+        uint8_t B[sz] = { 0 }, C[sz] = { 0 };
+
+        for (int j = i; j < (i + 4); j++) {
+            B[k++] = block[j];
+        }
+
+        matmul(C, B, sz);
+        // printbytes("%02X ", C, sz);
+
+        k = 0;
+        for (int j = i; j < (i + 4); j++) {
+            block[j] = C[k++];
+        }
+    }
 }
 
 int main() {
@@ -138,9 +266,36 @@ int main() {
         0xAB, 0xF7, 0x15, 0x88,
         0x09, 0xCF, 0x4F, 0x3C
     };
-    key_schedule(key);
+    u_int32_t W[W_LENGTH] = { 0 };
+    uint8_t plaintext[] = {
+        0x32, 0x43, 0xF6, 0xA8,
+        0x88, 0x5A, 0x30, 0x8D,
+        0x31, 0x31, 0x98, 0xA2,
+        0xE0, 0x37, 0x07, 0x34
+    };
+    // Key schedule
+    key_schedule(key, W);
 
-    printf("\n");
+    printf("key:\t\t");
+    printbytes("%02X ", key, KEY_LENGTH);
+    printf("plaintext:\t");
+    printbytes("%02X ", plaintext, PLAINTEXT_LENGTH);
+
+
+    // Round 0
+    key_addition_layer(plaintext, W, 0);
+
+    // Round 1 to 10
+    for (int round_no = 1; round_no <= 10; round_no++) {
+        byte_substitution_layer(plaintext);
+        shiftrows_layer(plaintext);
+        if (round_no != 10) {
+            mixcolumn_layer(plaintext);
+        }
+        key_addition_layer(plaintext, W, round_no);
+    }
+    printf("Ciphertext:\t");
+    printbytes("%02X ", plaintext, PLAINTEXT_LENGTH);
 
     return 0;
 }
