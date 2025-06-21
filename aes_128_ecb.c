@@ -2,12 +2,18 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include "GF_2_mult_mod.h"
 
 #define KEY_LENGTH 16 // BYTES (8 BITS)
 #define W_LENGTH 44 // WORDS (32 BITS)
-#define PLAINTEXT_LENGTH 16 // BYTES (8 BITS)
 #define BLOCK_LENGTH 16 // BYTES (8 BITS)
+#define STRING_LENGTH 50
+#define TOTAL_ROUNDS 10
+#define DEFAULT_PADDING_VALUE 16
+#define NO_REQUIRED_ARGS 3
+
 #define printbytes(format, expr, len) \
 { \
     for (int i=0; i< len; i++) { \
@@ -27,13 +33,30 @@
     } \
 }
 
-// #define fill(arr, len, value) \
-// { \
-//     for (int i = 0; i < len; ++i) \
-//     { \
-//         arr[i] = value; \
-//     } \
-// }
+
+uint8_t* load_key(char filename[])
+{
+    FILE* file = fopen(filename, "r");
+    struct stat file_stat;
+    uint8_t* key = (uint8_t*)malloc(sizeof(uint8_t) * KEY_LENGTH);
+    char c; int i = 0;
+
+    if (file == NULL) {
+        fprintf(stderr, "File %s not found on the device...\n", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    stat(filename, &file_stat);
+    if (file_stat.st_size != KEY_LENGTH) {
+        fclose(file);
+        fprintf(stderr, "Key does match the required size, expected %d bytes key length\n", KEY_LENGTH);
+        exit(EXIT_FAILURE);
+    }
+    while (fscanf(file, "%c", &c) != EOF) { key[i++] = c; }
+
+    fclose(file);
+    return key;
+}
 
 void copy_org_key_to_w(unsigned char key[], u_int32_t W[])
 {
@@ -50,7 +73,8 @@ void copy_org_key_to_w(unsigned char key[], u_int32_t W[])
     }
 }
 
-u_int8_t s_box(u_int8_t coord) {
+u_int8_t s_box(u_int8_t coord)
+{
     u_int8_t sbox[16][16] = {
         {0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76},
         {0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0},
@@ -75,14 +99,14 @@ u_int8_t s_box(u_int8_t coord) {
 
 u_int32_t g(u_int32_t V, uint8_t round_no)
 {
-
     u_int8_t RC[] = {
         0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
     };
 
     u_int8_t V2[4] = { 0x00 };
     u_int32_t temp = V;
-    u_int32_t mask = 0x000000FF; // Will helps us to get only the Least Significant Byte via a bitwise AND operation
+    // Will helps us to get only the Least Significant Byte via a bitwise AND operation
+    u_int32_t mask = 0x000000FF;
 
     /*
         This loop help to break the u_int32_t V into an arr
@@ -105,7 +129,6 @@ u_int32_t g(u_int32_t V, uint8_t round_no)
         V_RES[i] = s_box(V_RES[i]);
     }
 
-
     V_RES[0] ^= RC[round_no - 1];
 
     temp = 0x00;
@@ -125,49 +148,21 @@ u_int32_t g(u_int32_t V, uint8_t round_no)
 void key_schedule(unsigned char key[], u_int32_t W[])
 {
     copy_org_key_to_w(key, W);
-
-    for (int i = 1; i <= 10; i++) {
+    for (int i = 1; i <= 10; ++i) {
         W[4 * i] = W[4 * (i - 1)] ^ g(W[4 * i - 1], i);
-        for (int j = 1; j <= 3; j++) {
+        for (int j = 1; j <= 3; ++j) {
             W[4 * i + j] = W[4 * i + j - 1] ^ W[4 * (i - 1) + j];
         }
     }
-
 }
-
-
-
-// void set_block(u_int32_t block[], uint8_t plaintext[], int block_no)
-// {
-//     // block_no 1 | index :  0 - 15
-//     // block_no 2 | index : 16 - 31
-//     // block_no 3 | index : 32 - 47
-
-//     // i = (block_no-1)*16 
-//     // Ex block_no=1, start idx = (1-1)*16 = 0
-
-//     u_int32_t temp1 = 0x00, temp2 = 0x00;
-//     int j = 0, shift = 8 * 3;
-//     for (int i = (block_no - 1) * 16; i < ((block_no - 1) * 16) + 16; i++) {
-//         u_int32_t temp1 = plaintext[i];
-//         temp1 <<= shift;
-//         shift -= 8;
-//         temp2 ^= temp1;
-//         if ((i + 1) % 4 == 0) {
-//             block[j++] = temp2;
-//             temp2 = 0x00;
-//             shift = 8 * 3;
-//         }
-//     }
-// }
 
 void key_addition_layer(uint8_t block[], u_int32_t W[], int round_no)
 {
     int k = 0;
-    for (int i = (4 * round_no); i < (4 * round_no) + 4; i++) {
+    for (int i = (4 * round_no); i < (4 * round_no) + 4; ++i) {
         // loop again since we have 4 bytes in each W[i] 
         int shifter = 8 * 3;
-        for (int j = 0; j < 4; j++) {
+        for (int j = 0; j < 4; ++j) {
             uint8_t temp2 = (W[i] >> shifter) & 0xFF;
             block[k++] ^= temp2;
             shifter -= 8;
@@ -211,27 +206,24 @@ void shiftrows_layer(uint8_t block[])
     block[7] = temp1;
     block[11] = temp2;
     block[15] = temp3;
-
 }
 
 void matmul(uint8_t C[], uint8_t B[], int sz)
 {
     const int msz = 4;
     u_int8_t constant_matrix[msz][msz] = {
-           {0x02, 0x03, 0x01, 0x01},
-           {0x01, 0x02, 0x03, 0x01},
-           {0x01, 0x01, 0x02, 0x03},
-           {0x03, 0x01, 0x01, 0x02},
+        {0x02, 0x03, 0x01, 0x01},
+        {0x01, 0x02, 0x03, 0x01},
+        {0x01, 0x01, 0x02, 0x03},
+        {0x03, 0x01, 0x01, 0x02},
     };
 
-    // u_int8_t C[msz] = { 0 };
-    for (int i = 0; i < msz; i++) {
-        for (int j = 0; j < msz; j++) {
+    for (int i = 0; i < msz; ++i) {
+        for (int j = 0; j < msz; ++j) {
             u_int8_t ans = GF_2_mult_mod(constant_matrix[i][j], B[j]);
             C[i] ^= ans;
         }
     }
-
 }
 
 void mixcolumn_layer(uint8_t block[])
@@ -241,62 +233,100 @@ void mixcolumn_layer(uint8_t block[])
         int k = 0;
         uint8_t B[sz] = { 0 }, C[sz] = { 0 };
 
-        for (int j = i; j < (i + 4); j++) {
+        for (int j = i; j < (i + 4); ++j) {
             B[k++] = block[j];
         }
-
         matmul(C, B, sz);
-        // printbytes("%02X ", C, sz);
-
         k = 0;
-        for (int j = i; j < (i + 4); j++) {
+        for (int j = i; j < (i + 4); ++j) {
             block[j] = C[k++];
         }
     }
 }
 
-int main() {
-    // unsigned char key[] = {
-    //     0x6E, 0x65, 0x72, 0x6D, 0x6F, 0x2D, 0x62, 0x61,
-    //     0x73, 0x7A, 0x75, 0x2D, 0x73, 0x61, 0x72, 0x6B
-    // };
-    uint8_t key[16] = {
-        0x2B, 0x7E, 0x15, 0x16,
-        0x28, 0xAE, 0xD2, 0xA6,
-        0xAB, 0xF7, 0x15, 0x88,
-        0x09, 0xCF, 0x4F, 0x3C
-    };
-    u_int32_t W[W_LENGTH] = { 0 };
-    uint8_t plaintext[] = {
-        0x32, 0x43, 0xF6, 0xA8,
-        0x88, 0x5A, 0x30, 0x8D,
-        0x31, 0x31, 0x98, 0xA2,
-        0xE0, 0x37, 0x07, 0x34
-    };
+void encrypt_block(uint8_t block[], u_int32_t W[], FILE* cipher_file)
+{
+    // Round 0
+    key_addition_layer(block, W, 0);
+
+    // Round 1 to 10
+    for (int round_no = 1; round_no <= TOTAL_ROUNDS; ++round_no) {
+        byte_substitution_layer(block);
+        shiftrows_layer(block);
+        if (round_no != 10) {
+            mixcolumn_layer(block);
+        }
+        key_addition_layer(block, W, round_no);
+    }
+    for (int i = 0; i < BLOCK_LENGTH; ++i) {
+        fprintf(cipher_file, "%02x", block[i]);
+    }
+}
+
+int main(int argc, char* argv[]) {
+    u_int32_t W[W_LENGTH];
+    memset(W, 0x00, W_LENGTH);
+    uint8_t* key;
+    int flags = 0, opt;
+    char plaintext_filename[STRING_LENGTH],
+        key_filename[STRING_LENGTH],
+        ciphertext_filename[STRING_LENGTH];
+
+    while ((opt = getopt(argc, argv, "p:k:o:")) != -1) {
+        switch (opt) {
+        case 'p':
+            flags++;
+            strcpy(plaintext_filename, optarg);
+            break;
+        case 'k':
+            flags++;
+            strcpy(key_filename, optarg);
+            break;
+        case 'o':
+            flags++;
+            strcpy(ciphertext_filename, optarg);
+            break;
+        default:
+            fprintf(stderr, "Usage: %s [-p plaintext_filename] [-k key_filename] [-o ciphertext_filename] \n", argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
+    if (flags != NO_REQUIRED_ARGS) {
+        fprintf(stderr, "\nError: Missing arguments...\n\nUsage: %s [-p plaintext_filename] [-k key_filename] [-o ciphertext_filename] \n\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    // Loading key from file
+    key = load_key(key_filename);
+
+    // Validate the existence of plaintext file
+    FILE* plaintext_file_ptr = fopen(plaintext_filename, "r");
+    if (plaintext_file_ptr == NULL) {
+        fprintf(stderr, "File %s not found on the device...\n", plaintext_filename);
+        exit(EXIT_FAILURE);
+    }
+
     // Key schedule
     key_schedule(key, W);
 
-    printf("key:\t\t");
-    printbytes("%02X ", key, KEY_LENGTH);
-    printf("plaintext:\t");
-    printbytes("%02X ", plaintext, PLAINTEXT_LENGTH);
+    u_int8_t block[BLOCK_LENGTH];
+    struct stat file_stat;
+    stat(plaintext_filename, &file_stat);
+    u_int8_t padding_value = BLOCK_LENGTH - ((int)file_stat.st_size % BLOCK_LENGTH);
+    memset(block, padding_value, BLOCK_LENGTH);
+    FILE* ciphertext_file_ptr = fopen(ciphertext_filename, "w");
 
-
-    // Round 0
-    key_addition_layer(plaintext, W, 0);
-
-    // Round 1 to 10
-    for (int round_no = 1; round_no <= 10; round_no++) {
-        byte_substitution_layer(plaintext);
-        shiftrows_layer(plaintext);
-        if (round_no != 10) {
-            mixcolumn_layer(plaintext);
-        }
-        key_addition_layer(plaintext, W, round_no);
+    while (fscanf(plaintext_file_ptr, "%16c", block) != EOF) {
+        encrypt_block(block, W, ciphertext_file_ptr);
+        memset(block, padding_value, BLOCK_LENGTH);
     }
-    printf("Ciphertext:\t");
-    printbytes("%02X ", plaintext, PLAINTEXT_LENGTH);
+
+    if (padding_value == DEFAULT_PADDING_VALUE) {
+        encrypt_block(block, W, ciphertext_file_ptr);
+    }
+
+    fclose(plaintext_file_ptr);
+    fclose(ciphertext_file_ptr);
 
     return 0;
 }
-

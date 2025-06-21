@@ -1,0 +1,3 @@
+Roughly speaking, a group is set with one operation and the corresponding inverse operation. 
+If the operation is called addition, the inverse operation is subtraction; if the operation is 
+multiplication, the inverse operation is division (or multiplication with the inverse element).

@@ -2,3 +2,6 @@
 *.o
 .DS_Store
 remove.me
+/remove
+aes_128_ecb
+.vscode/
